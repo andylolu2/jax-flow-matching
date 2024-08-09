@@ -1,0 +1,6 @@
+jax[cuda12]
+numpy
+matplotlib
+jupyter
+ipympl
+ipywidgets
