@@ -1,44 +1,56 @@
-import numpy as np
+from typing import Self
+
+import jax
+import jax.numpy as jnp
+from flax import struct
+from jaxtyping import Array, Float, Shaped
 
 from flow_matching.dataset.base import Dataset
 
 
+@struct.dataclass
 class ToyDataset(Dataset):
-    def __init__(self):
-        self.means = np.array([[4.0, -2.0], [-4.0, 3.0]])
-        self.covariances = np.array(
-            [
-                [[1.0, 0.7], [0.7, 1.0]],
-                [[1.0, 0.7], [0.7, 1.0]],
-            ]
+    means: Float[Array, "k 2"]
+    covariances: Float[Array, "k 2 2"]
+
+    @classmethod
+    def create(cls, seed: int) -> Self:
+        return cls(
+            epoch=0,
+            step=0,
+            rng=jax.random.PRNGKey(seed),
+            means=jnp.array([[4.0, -2.0], [-4.0, 3.0]]),
+            covariances=jnp.array(
+                [
+                    [[1.0, 0.7], [0.7, 1.0]],
+                    [[1.0, 0.7], [0.7, 1.0]],
+                ]
+            ),
         )
 
-        # self.means = np.array([[4.0, -2.0]])
-        # self.covariances = np.array(
-        #     [
-        #         [[1.0, 0.7], [0.7, 1.0]],
-        #     ]
-        # )
-
-    def dimensions(self) -> tuple[int, ...]:
-        return (2,)
-
-    def sample(self, batch_size: int) -> np.ndarray:
-        # return np.random.multivariate_normal(self.mean, self.covariance, batch_size)
-        samples = np.array(
+    def sample(self, batch_size: int) -> tuple[Shaped[Array, "{batch_size} ..."], Self]:
+        rng1, rng2, *rngs = jax.random.split(self.rng, len(self.means) + 2)
+        samples = jnp.array(
             [
-                np.random.multivariate_normal(mean, covariance, batch_size)
-                for mean, covariance in zip(self.means, self.covariances)
+                jax.random.multivariate_normal(
+                    rngs[i], self.means[i], self.covariances[i], (batch_size,)
+                )
+                for i in range(len(self.means))
             ]
         )
-        idx = np.random.randint(0, len(self.means), batch_size)
-        return samples[idx, np.arange(batch_size)]
+        idx = jax.random.randint(rng2, (batch_size,), 0, len(self.means))
+        samples = samples[idx, jnp.arange(batch_size)]
+        return samples, self.replace(rng=rng1, step=self.step + 1)  # type: ignore
 
 
 if __name__ == "__main__":
+    from pathlib import Path
+
     import matplotlib.pyplot as plt
 
-    dataset = ToyDataset()
-    samples = dataset.sample(1000)
+    dataset = ToyDataset.create(0)
+    samples, state = dataset.sample(1000)
     plt.scatter(samples[:, 0], samples[:, 1])
+
+    Path("tmp").mkdir(exist_ok=True)
     plt.savefig("tmp/toy_dataset.png")

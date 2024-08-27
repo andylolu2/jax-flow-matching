@@ -5,3 +5,9 @@ matplotlib
 jupyter
 ipympl
 ipywidgets
+absl-py
+ml-collections
+flax
+clu
+jaxtyping
+tensorflow
