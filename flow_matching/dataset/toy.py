@@ -1,9 +1,8 @@
-from typing import Self
-
 import jax
 import jax.numpy as jnp
 from flax import struct
 from jaxtyping import Array, Float, Shaped
+from typing_extensions import Self
 
 from flow_matching.dataset.base import Dataset
 
@@ -28,7 +27,7 @@ class ToyDataset(Dataset):
             ),
         )
 
-    def sample(self, batch_size: int) -> tuple[Shaped[Array, "{batch_size} ..."], Self]:
+    def sample(self, batch_size: int) -> tuple[Shaped[Array, "{batch_size} 2"], Self]:
         rng1, rng2, *rngs = jax.random.split(self.rng, len(self.means) + 2)
         samples = jnp.array(
             [

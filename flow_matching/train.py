@@ -1,14 +1,20 @@
+import math
+from functools import partial
 from os import PathLike
 from pathlib import Path
+from typing import Callable
 
 import flax.struct
 import jax
+import jax.numpy as jnp
+import matplotlib.pyplot as plt
 import optax
 from absl import app, flags, logging
 from clu.metric_writers import create_default_writer, write_values
 from clu.metrics import Collection, LastValue
+from diffrax import Dopri5, ODETerm, diffeqsolve
 from flax.training.train_state import TrainState as _TrainState
-from jaxtyping import PRNGKeyArray
+from jaxtyping import Array, Float, PRNGKeyArray
 from ml_collections import config_flags
 
 from flow_matching.dataset.base import Dataset
@@ -18,7 +24,7 @@ from flow_matching.model.mlp import MLP
 
 FLAGS = flags.FLAGS
 config_flags.DEFINE_config_file(
-    "config", None, "Training configuration file.", short_name="c"
+    "config", None, "Training configuration file.", short_name="c", lock_config=False
 )
 
 
@@ -29,6 +35,7 @@ class TrainMetrics(Collection):
 
 
 class TrainState(_TrainState):
+    forward_fn: Callable = flax.struct.field(pytree_node=False)
     rng: PRNGKeyArray
     train_metrics: TrainMetrics
     model_metrics: ModelMetrics
@@ -57,6 +64,7 @@ def build_optimizer(name: str, **kwargs) -> optax.GradientTransformation:
     raise ValueError(f"Unknown optimizer: {name}")
 
 
+@partial(jax.jit, static_argnames=("config",))
 def train_step(train_state: TrainState, config) -> TrainState:
     x, train_dataset = train_state.train_dataset.sample(config.batch_size)
     rng, fwd_rng = jax.random.split(train_state.rng)
@@ -93,6 +101,48 @@ def evaluate(train_state: TrainState, dataset: Dataset) -> None:
     logging.info("Evaluating on validation dataset")
 
 
+@partial(jax.jit, static_argnames=("n",))
+def _generate_samples(train_state: TrainState, n: int) -> Float[Array, "{n} ..."]:
+    _x, _ = train_state.train_dataset.sample(1)
+    size = math.prod(jnp.shape(_x)[1:])
+    x0 = jax.random.multivariate_normal(
+        train_state.rng, jnp.zeros(size), jnp.eye(size), shape=(n,)
+    )
+
+    term = ODETerm(
+        lambda t, x, args: train_state.apply_fn(
+            train_state.params,
+            x,
+            jnp.broadcast_to(t, jnp.shape(x)[0]),
+            method=train_state.forward_fn,
+        )
+    )
+    solver = Dopri5()
+    solution = diffeqsolve(term, solver, t0=0, t1=0.995, dt0=0.05, y0=x0)
+
+    x1 = solution.ys[-1]
+    return x1
+
+
+def generate_samples(train_state: TrainState, n: int, save_path: PathLike) -> None:
+    logging.info("Generating samples from model")
+
+    x1 = _generate_samples(train_state, n)
+    x_real, _ = train_state.train_dataset.sample(n)
+
+    Path(save_path).mkdir(exist_ok=True, parents=True)
+
+    if jnp.ndim(x1) == 2 and jnp.shape(x1)[-1] == 2:
+        fig, ax = plt.subplots()
+        ax.scatter(x1[:, 0], x1[:, 1], s=5, alpha=0.5, label="Generated samples")
+        ax.scatter(x_real[:, 0], x_real[:, 1], s=5, alpha=0.5, label="Real samples")
+        ax.set_aspect("equal")
+        ax.legend()
+        fig.savefig(Path(save_path) / "samples.png")
+    else:
+        logging.warning("Cannot plot samples with shape %s", jnp.shape(x1))
+
+
 def main(_):
     config = FLAGS.config
     logging.info("Config: %s", config)
@@ -107,6 +157,7 @@ def main(_):
     params = model.init(model_rng, train_dataset.sample(1)[0], fwd_rng)
     train_state = TrainState.create(
         apply_fn=model.apply,
+        forward_fn=model.forward,
         params=params,
         tx=optimizer,
         train_metrics=TrainMetrics.empty(),
@@ -128,6 +179,12 @@ def main(_):
             save_checkpoint(train_state, Path(config.checkpoint_dir) / f"step_{step}")
         if step % config.eval_steps == 0:
             evaluate(train_state, val_dataset)
+        if step % config.generate.steps == 0:
+            generate_samples(
+                train_state,
+                config.generate.samples,
+                Path(config.checkpoint_dir) / f"step_{step}",
+            )
 
 
 if __name__ == "__main__":
