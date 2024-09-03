@@ -1,0 +1,45 @@
+import datasets
+import jax
+import jax.numpy as jnp
+from flax import struct
+from jaxtyping import Array, Float, Shaped
+from typing_extensions import Self
+
+from flow_matching.dataset.base import Dataset
+
+
+@struct.dataclass
+class MnistDataset(Dataset):
+    img: Float[Array, "n 28 28"]
+
+    @classmethod
+    def create(cls, seed: int, split: str) -> Self:
+        ds = datasets.load_dataset("mnist")
+        assert isinstance(ds, datasets.DatasetDict)
+
+        if split == "train":
+            img = jnp.array(ds["train"]["image"][:50000])
+        elif split == "val":
+            img = jnp.array(ds["train"]["image"][50000:])
+        else:
+            raise ValueError(f"Unknown split: {split}")
+
+        return cls(epoch=0, step=0, rng=jax.random.PRNGKey(seed), img=img)
+
+    def sample(
+        self, batch_size: int
+    ) -> tuple[Shaped[Array, "{batch_size} 28 28"], Self]:
+        assert 0 < batch_size <= len(self.img)
+
+        state = jax.lax.cond(
+            self.step + batch_size > len(self.img),
+            lambda: self.replace(epoch=self.epoch + 1, step=0),  # type: ignore
+            lambda: self,
+        )
+
+        order = jax.random.permutation(state.rng, len(state.img))
+        sample_idx = jax.lax.dynamic_slice_in_dim(order, state.step, batch_size, axis=0)
+        return (
+            state.img[sample_idx],
+            state.replace(step=state.step + batch_size),  # type: ignore
+        )

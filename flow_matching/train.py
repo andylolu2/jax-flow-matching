@@ -18,6 +18,7 @@ from jaxtyping import Array, Float, PRNGKeyArray
 from ml_collections import config_flags
 
 from flow_matching.dataset.base import Dataset
+from flow_matching.dataset.mnist import MnistDataset
 from flow_matching.dataset.toy import ToyDataset
 from flow_matching.model.base import Model, ModelMetrics
 from flow_matching.model.mlp import MLP
@@ -45,7 +46,15 @@ class TrainState(_TrainState):
 
 def build_dataset(name: str, **kwargs) -> tuple[Dataset, Dataset]:
     if name == "toy":
-        return ToyDataset.create(**kwargs), ToyDataset.create(**kwargs)
+        return (
+            ToyDataset.create(**kwargs),
+            ToyDataset.create(**kwargs),
+        )
+    elif name == "mnist":
+        return (
+            MnistDataset.create(**kwargs, split="train"),
+            MnistDataset.create(**kwargs, split="val"),
+        )
 
     raise ValueError(f"Unknown dataset: {name}")
 
@@ -108,6 +117,7 @@ def _generate_samples(train_state: TrainState, n: int) -> Float[Array, "{n} ..."
     x0 = jax.random.multivariate_normal(
         train_state.rng, jnp.zeros(size), jnp.eye(size), shape=(n,)
     )
+    x0 = jnp.reshape(x0, (n,) + jnp.shape(_x)[1:])
 
     term = ODETerm(
         lambda t, x, args: train_state.apply_fn(
@@ -132,13 +142,38 @@ def generate_samples(train_state: TrainState, n: int, save_path: PathLike) -> No
 
     Path(save_path).mkdir(exist_ok=True, parents=True)
 
-    if jnp.ndim(x1) == 2 and jnp.shape(x1)[-1] == 2:
+    if jnp.ndim(x1) == 2 and jnp.shape(x1)[-1] == 2:  # 2D samples
         fig, ax = plt.subplots()
         ax.scatter(x1[:, 0], x1[:, 1], s=5, alpha=0.5, label="Generated samples")
         ax.scatter(x_real[:, 0], x_real[:, 1], s=5, alpha=0.5, label="Real samples")
         ax.set_aspect("equal")
         ax.legend()
         fig.savefig(Path(save_path) / "samples.png")
+    elif jnp.ndim(x1) == 3 or (
+        jnp.ndim(x1) == 4 and jnp.shape(x1)[-1] in (1, 3)
+    ):  # Images
+        if jnp.ndim(x1) == 3:
+            x1 = jnp.expand_dims(x1, -1)
+        if jnp.shape(x1)[-1] == 1:
+            x1 = jnp.repeat(x1, 3, axis=-1)
+
+        n, h, w, c = jnp.shape(x1)
+
+        grid_size = math.ceil(math.sqrt(n))
+        canvas = jnp.zeros((grid_size * h, grid_size * w, c))
+
+        for i in range(n):
+            row = i // grid_size
+            col = i % grid_size
+            canvas = canvas.at[row * h : (row + 1) * h, col * w : (col + 1) * w, :].set(
+                x1[i]
+            )
+
+        fig, ax = plt.subplots()
+        ax.imshow(canvas)
+        ax.axis("off")
+        fig.savefig(Path(save_path) / "samples.png")
+
     else:
         logging.warning("Cannot plot samples with shape %s", jnp.shape(x1))
 
