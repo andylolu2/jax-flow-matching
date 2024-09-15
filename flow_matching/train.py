@@ -21,7 +21,9 @@ from flow_matching.dataset.base import Dataset
 from flow_matching.dataset.mnist import MnistDataset
 from flow_matching.dataset.toy import ToyDataset
 from flow_matching.model.base import Model, ModelMetrics
+from flow_matching.model.cnn import CNN
 from flow_matching.model.mlp import MLP
+from flow_matching.model.unet import UNet
 
 FLAGS = flags.FLAGS
 config_flags.DEFINE_config_file(
@@ -62,6 +64,10 @@ def build_dataset(name: str, **kwargs) -> tuple[Dataset, Dataset]:
 def build_model(name: str, **kwargs) -> Model:
     if name == "mlp":
         return MLP(**kwargs)
+    elif name == "cnn":
+        return CNN(**kwargs)
+    elif name == "unet":
+        return UNet(**kwargs)
 
     raise ValueError(f"Unknown model: {name}")
 
@@ -138,17 +144,18 @@ def generate_samples(train_state: TrainState, n: int, save_path: PathLike) -> No
     logging.info("Generating samples from model")
 
     x1 = _generate_samples(train_state, n)
-    x_real, _ = train_state.train_dataset.sample(n)
 
     Path(save_path).mkdir(exist_ok=True, parents=True)
 
     if jnp.ndim(x1) == 2 and jnp.shape(x1)[-1] == 2:  # 2D samples
+        x_real, _ = train_state.train_dataset.sample(n)
         fig, ax = plt.subplots()
         ax.scatter(x1[:, 0], x1[:, 1], s=5, alpha=0.5, label="Generated samples")
         ax.scatter(x_real[:, 0], x_real[:, 1], s=5, alpha=0.5, label="Real samples")
         ax.set_aspect("equal")
         ax.legend()
         fig.savefig(Path(save_path) / "samples.png")
+        plt.close(fig)
     elif jnp.ndim(x1) == 3 or (
         jnp.ndim(x1) == 4 and jnp.shape(x1)[-1] in (1, 3)
     ):  # Images
@@ -173,6 +180,7 @@ def generate_samples(train_state: TrainState, n: int, save_path: PathLike) -> No
         ax.imshow(canvas)
         ax.axis("off")
         fig.savefig(Path(save_path) / "samples.png")
+        plt.close(fig)
 
     else:
         logging.warning("Cannot plot samples with shape %s", jnp.shape(x1))

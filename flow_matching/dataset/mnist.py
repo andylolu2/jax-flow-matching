@@ -24,12 +24,18 @@ class MnistDataset(Dataset):
         else:
             raise ValueError(f"Unknown split: {split}")
 
+        img = jax.image.resize(img, (len(img), 32, 32), "linear")
+        img = img.astype(jnp.float32) / 255.0  # Int[0, 255] -> Float[0, 1]
+        img = jnp.expand_dims(img, axis=-1)  # (n, 28, 28) -> (n, 28, 28, 1)
+
         return cls(epoch=0, step=0, rng=jax.random.PRNGKey(seed), img=img)
 
     def sample(
         self, batch_size: int
-    ) -> tuple[Shaped[Array, "{batch_size} 28 28"], Self]:
-        assert 0 < batch_size <= len(self.img)
+    ) -> tuple[Shaped[Array, "{batch_size} 28 28 1"], Self]:
+        assert (
+            0 < batch_size <= len(self.img)
+        ), f"Invalid {batch_size=} but {self.img.shape=}"
 
         state = jax.lax.cond(
             self.step + batch_size > len(self.img),

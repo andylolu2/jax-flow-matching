@@ -1,5 +1,5 @@
-https://storage.googleapis.com/jax-releases/cuda12/jaxlib-0.4.29+cuda12.cudnn91-cp310-cp310-manylinux2014_x86_64.whl
-jax==0.4.29
+jax[cuda12]
+jax
 diffrax
 numpy
 matplotlib

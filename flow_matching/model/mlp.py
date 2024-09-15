@@ -17,12 +17,10 @@ class MLP(Model):
     ) -> Float[ArrayLike, "batch *dims"]:
         batch, *dims = jnp.shape(x)
 
-        x = nn.Dense(self.dims[0])(jnp.reshape(x, (batch, -1)))
-        t = nn.Dense(self.dims[0])(jnp.reshape(t, (batch, 1)))
-        x = jax.nn.relu(x + t)
-
+        x = jnp.reshape(x, (batch, -1))
+        t = jnp.reshape(t, (batch, 1))
         for dim in self.dims[1:]:
-            x = nn.Dense(dim)(x)
+            x = nn.Dense(dim)(x) + nn.Dense(dim)(t)
             x = jax.nn.relu(x)
 
         x = nn.Dense(math.prod(dims))(x)
