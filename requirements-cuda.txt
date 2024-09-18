@@ -14,3 +14,4 @@ jaxtyping
 tensorflow
 datasets
 git+https://github.com/google/orbax/#subdirectory=checkpoint
+wandb

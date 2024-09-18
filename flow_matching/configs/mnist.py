@@ -9,7 +9,7 @@ def get_config():
 
     config.seed = 0
     config.num_steps = 50000
-    config.log_steps = 1000
+    config.log_steps = 500
     config.save_steps = 1000
     config.eval = dict(
         steps=1000,

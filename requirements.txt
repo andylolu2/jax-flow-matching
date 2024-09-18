@@ -12,4 +12,5 @@ clu
 jaxtyping
 tensorflow
 datasets
-orbax-checkpoint
+git+https://github.com/google/orbax/#subdirectory=checkpoint
+wandb
