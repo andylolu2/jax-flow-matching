@@ -12,3 +12,4 @@ clu
 jaxtyping
 tensorflow
 datasets
+orbax-checkpoint

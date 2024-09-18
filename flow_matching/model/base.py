@@ -26,11 +26,11 @@ class Model(nn.Module):
         x = jax.vmap(gaussian_flow.sample)(t, x1, jax.random.split(x_rng, batch))
 
         u_target = jax.vmap(gaussian_flow.u)(x, t, x1)
-        u_pred = self.forward(x, t)
+        u_pred = jax.vmap(self.forward)(x, t)
         loss = jnp.mean(jnp.sum((u_pred - u_target) ** 2, axis=-1))
         return loss, ModelMetrics.single_from_model_output(loss=loss)
 
     def forward(
-        self, x: Float[ArrayLike, "batch *dims"], t: Float[ArrayLike, "batch"]
-    ) -> Float[Array, "batch *dims"]:
+        self, x: Float[ArrayLike, "*dims"], t: Float[ArrayLike, ""]
+    ) -> Float[Array, "*dims"]:
         raise NotImplementedError

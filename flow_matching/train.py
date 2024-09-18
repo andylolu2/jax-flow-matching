@@ -2,20 +2,21 @@ import math
 from functools import partial
 from os import PathLike
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 import flax.struct
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import optax
+import orbax.checkpoint
 from absl import app, flags, logging
 from clu.metric_writers import create_default_writer, write_values
-from clu.metrics import Collection, LastValue
+from clu.metrics import Average, Collection, LastValue
 from diffrax import Dopri5, ODETerm, diffeqsolve
 from flax.training.train_state import TrainState as _TrainState
 from jaxtyping import Array, Float, PRNGKeyArray
-from ml_collections import config_flags
+from ml_collections import FrozenConfigDict, config_flags
 
 from flow_matching.dataset.base import Dataset
 from flow_matching.dataset.mnist import MnistDataset
@@ -110,10 +111,38 @@ def log_metrics(train_state: TrainState) -> None:
 
 def save_checkpoint(train_state: TrainState, path: PathLike) -> None:
     logging.info("Saving checkpoint to %s", path)
+    checkpointer = orbax.checkpoint.StandardCheckpointer()
+    checkpointer.save(Path(path).absolute().resolve(), train_state)
+    checkpointer.wait_until_finished()
 
 
-def evaluate(train_state: TrainState, dataset: Dataset) -> None:
+@partial(jax.jit, static_argnames=("batch_size",))
+def _eval_step(
+    train_state: TrainState,
+    dataset: Dataset,
+    batch_size: int,
+    model_metrics: ModelMetrics,
+):
+    x, dataset = dataset.sample(batch_size)
+    _, new_model_metrics = train_state.apply_fn(train_state.params, x, train_state.rng)
+    model_metrics = model_metrics.merge(new_model_metrics)
+    return model_metrics, dataset
+
+
+def evaluate(
+    train_state: TrainState, dataset: Dataset, n_batches: int, batch_size: int
+) -> None:
     logging.info("Evaluating on validation dataset")
+
+    model_metrics = ModelMetrics.empty()
+
+    for _ in range(n_batches):
+        model_metrics, dataset = _eval_step(
+            train_state, dataset, batch_size, model_metrics
+        )
+
+    model_metrics = model_metrics.compute()
+    logging.info("Validation metrics: %s", model_metrics)
 
 
 @partial(jax.jit, static_argnames=("n",))
@@ -125,14 +154,10 @@ def _generate_samples(train_state: TrainState, n: int) -> Float[Array, "{n} ..."
     )
     x0 = jnp.reshape(x0, (n,) + jnp.shape(_x)[1:])
 
-    term = ODETerm(
-        lambda t, x, args: train_state.apply_fn(
-            train_state.params,
-            x,
-            jnp.broadcast_to(t, jnp.shape(x)[0]),
-            method=train_state.forward_fn,
-        )
+    forward_fn = lambda t, x, args: train_state.apply_fn(
+        train_state.params, x, t, method=train_state.forward_fn
     )
+    term = ODETerm(jax.vmap(forward_fn, in_axes=(None, 0, None)))
     solver = Dopri5()
     solution = diffeqsolve(term, solver, t0=0, t1=0.995, dt0=0.05, y0=x0)
 
@@ -187,7 +212,7 @@ def generate_samples(train_state: TrainState, n: int, save_path: PathLike) -> No
 
 
 def main(_):
-    config = FLAGS.config
+    config: Any = FrozenConfigDict(FLAGS.config)
     logging.info("Config: %s", config)
 
     rng = jax.random.PRNGKey(config.seed)
@@ -210,19 +235,22 @@ def main(_):
         rng=state_rng,
     )
 
-    while (step := train_state.step) < config.num_steps:
+    while train_state.step < config.num_steps:
         train_state = train_step(train_state, config)
 
-        if step % config.log_steps == 0:
+        step = train_state.step
+        if config.log_steps > 0 and step % config.log_steps == 0:
             log_metrics(train_state)
             train_state = train_state.replace(
                 train_metrics=TrainMetrics.empty(), model_metrics=ModelMetrics.empty()
             )
-        if step % config.save_steps == 0:
+        if config.save_steps > 0 and step % config.save_steps == 0:
             save_checkpoint(train_state, Path(config.checkpoint_dir) / f"step_{step}")
-        if step % config.eval_steps == 0:
-            evaluate(train_state, val_dataset)
-        if step % config.generate.steps == 0:
+        if config.eval.steps > 0 and step % config.eval.steps == 0:
+            evaluate(
+                train_state, val_dataset, config.eval.n_batches, config.eval.batch_size
+            )
+        if config.generate.steps > 0 and step % config.generate.steps == 0:
             generate_samples(
                 train_state,
                 config.generate.samples,

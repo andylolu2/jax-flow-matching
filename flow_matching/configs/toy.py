@@ -8,12 +8,16 @@ def get_config():
 
     config.seed = 0
     config.num_steps = 5000
-    config.log_steps = 500
-    config.save_steps = 500
-    config.eval_steps = 500
+    config.log_steps = 1000
+    config.save_steps = 1000
+    config.eval = dict(
+        steps=1000,
+        n_batches=100,
+        batch_size=64,
+    )
 
     config.generate = dict(
-        steps=500,
+        steps=1000,
         samples=1000,
     )
 
@@ -26,11 +30,11 @@ def get_config():
     )
     config.model = dict(
         name="mlp",
-        dims=[8, 8],
+        dims=[16, 16],
     )
     config.optimizer = dict(
         name="adam",
-        learning_rate=1e-3,
+        learning_rate=3e-3,
     )
 
-    return config_dict.FrozenConfigDict(config)
+    return config

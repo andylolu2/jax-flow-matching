@@ -1,9 +1,6 @@
-import math
-
 import flax.linen as nn
-import jax
 import jax.numpy as jnp
-from jaxtyping import ArrayLike, Float
+from jaxtyping import Array, ArrayLike, Float
 
 from flow_matching.model.base import Model
 
@@ -13,17 +10,12 @@ class CNN(Model):
 
     @nn.compact
     def forward(
-        self,
-        x: Float[ArrayLike, "batch height width channels"],
-        t: Float[ArrayLike, "batch"],
-    ) -> Float[ArrayLike, "batch height width channels"]:
-        b, h, w, c = x.shape
+        self, x: Float[ArrayLike, "h w c"], t: Float[ArrayLike, ""]
+    ) -> Float[Array, "h w c"]:
+        h, w, c = jnp.shape(x)
+        t = jnp.expand_dims(t, axis=0)
         for dim in self.dims:
-            x = nn.Conv(dim, (3, 3), padding="SAME")(x)
-            x += jnp.expand_dims(
-                nn.Dense(dim)(jnp.expand_dims(t, axis=-1)), axis=(1, 2)
-            )
+            x = nn.Conv(dim, kernel_size=3)(x) + nn.Dense(dim, use_bias=False)(t)
             x = nn.relu(x)
 
-        x = nn.Conv(c, (1, 1), padding="SAME")(x)
-        return x
+        return nn.Conv(c, kernel_size=1)(x)

@@ -2,8 +2,9 @@ from functools import partial
 from typing import Any, Collection, Sequence
 
 import flax.linen as nn
+import jax
 import jax.numpy as jnp
-from jaxtyping import ArrayLike, Float
+from jaxtyping import Array, ArrayLike, Float
 
 from flow_matching.model.base import Model
 
@@ -16,14 +17,17 @@ class UpSample(nn.Module):
     dtype: Dtype
 
     @nn.compact
-    def __call__(self, x):
-        x = nn.ConvTranspose(
-            features=self.dim,
-            kernel_size=(self.kernel_size, self.kernel_size),
+    def __call__(self, x: Float[ArrayLike, "h w c"]) -> Float[Array, "{2*h} {2*w} c"]:
+        # h, w, c = jnp.shape(x)
+        # x_ = jax.image.resize(x, (2 * h, 2 * w, c), method="nearest")
+        # x_ = nn.Conv(self.dim, self.kernel_size, dtype=self.dtype)(x_)
+        x_ = nn.ConvTranspose(
+            self.dim,
+            (self.kernel_size, self.kernel_size),
             strides=(2, 2),
             dtype=self.dtype,
         )(x)
-        return x
+        return x_
 
 
 class DownSample(nn.Module):
@@ -32,51 +36,45 @@ class DownSample(nn.Module):
     dtype: Dtype
 
     @nn.compact
-    def __call__(self, x):
-        x = nn.Conv(
-            features=self.dim,
-            kernel_size=(self.kernel_size, self.kernel_size),
+    def __call__(self, x: Float[ArrayLike, "h w c"]) -> Float[Array, "{h//2} {w//2} c"]:
+        # h, w, c = jnp.shape(x)
+        # x_ = jax.image.resize(x, (h // 2, w // 2, c), method="linear")
+        # x_ = nn.Conv(self.dim, self.kernel_size, dtype=self.dtype)(x_)
+        x_ = nn.Conv(
+            self.dim,
+            (self.kernel_size, self.kernel_size),
             strides=(2, 2),
             dtype=self.dtype,
         )(x)
-        return x
+        return x_
 
 
 class SinusoidalPosEmbedding(nn.Module):
     dim: int
 
     @nn.compact
-    def __call__(self, pos):
+    def __call__(self, t: Float[ArrayLike, ""]) -> Float[Array, "d"]:
         """Refer to https://arxiv.org/pdf/1706.03762.pdf#subsection.3.5"""
-        batch_size = pos.shape[0]
-
-        assert self.dim % 2 == 0, self.dim
-        assert pos.shape == (batch_size, 1), pos.shape
+        assert self.dim % 2 == 0, f"Dim must be even, got {self.dim}"
 
         d_model = self.dim // 2
-        i = jnp.arange(d_model)[None, :]
+        freqs = t * jnp.exp(-(2 * jnp.arange(d_model) / d_model) * jnp.log(10000))
+        emb = jnp.concatenate((jnp.sin(freqs), jnp.cos(freqs)))
 
-        pos_embedding = pos * jnp.exp(-(2 * i / d_model) * jnp.log(10000))
-        pos_embedding = jnp.concatenate(
-            (jnp.sin(pos_embedding), jnp.cos(pos_embedding)), axis=-1
-        )
-
-        assert pos_embedding.shape == (batch_size, self.dim), pos_embedding.shape
-
-        return pos_embedding
+        return emb
 
 
 class TimeEmbedding(nn.Module):
-    dim: int
-    sinusoidal_embed_dim: int
+    sinusoidal_dim: int
+    time_dim: int
     dtype: Dtype
 
     @nn.compact
-    def __call__(self, time):
-        x = SinusoidalPosEmbedding(self.sinusoidal_embed_dim)(time)
-        x = nn.Dense(self.dim, dtype=self.dtype)(x)
+    def __call__(self, t: Float[ArrayLike, ""]) -> Float[Array, "{self.time_dim}"]:
+        x = SinusoidalPosEmbedding(self.sinusoidal_dim)(t)
+        x = nn.Dense(self.time_dim, dtype=self.dtype)(x)
         x = nn.gelu(x)
-        x = nn.Dense(self.dim, dtype=self.dtype)(x)
+        x = nn.Dense(self.time_dim, dtype=self.dtype)(x)
         return x
 
 
@@ -88,19 +86,22 @@ class Block(nn.Module):
     dtype: Dtype
 
     @nn.compact
-    def __call__(self, x, deterministic: bool, *, scale_shift=None):
-        x = nn.GroupNorm(self.num_groups, dtype=self.dtype)(x)
-        x = nn.silu(x)
-        x = nn.Dropout(rate=self.dropout)(x, deterministic)
-        x = nn.Conv(
-            self.dim, kernel_size=(self.kernel_size, self.kernel_size), dtype=self.dtype
-        )(x)
+    def __call__(
+        self,
+        x: Float[ArrayLike, "h w c"],
+        deterministic: bool,
+        scale_shift: tuple[Float[ArrayLike, "c"], Float[ArrayLike, "c"]] | None = None,
+    ) -> Float[Array, "h w c"]:
+        x_ = nn.GroupNorm(self.num_groups, dtype=self.dtype)(x)
+        x_ = nn.gelu(x_)
+        x_ = nn.Dropout(rate=self.dropout)(x_, deterministic)
+        x_ = nn.Conv(self.dim, self.kernel_size, dtype=self.dtype)(x_)
 
         if scale_shift is not None:
             scale, shift = scale_shift
-            x = x * (1 + scale) + shift
+            x_ = x_ * (1 + scale) + shift
 
-        return x
+        return x_
 
 
 class ResnetBlock(nn.Module):
@@ -111,36 +112,28 @@ class ResnetBlock(nn.Module):
     dtype: Dtype
 
     @nn.compact
-    def __call__(self, x, deterministic: bool, *, time_emb=None):
-        """
-        Args:
-            x: array of shape `[batch_size, width, height, d]`
-        """
+    def __call__(
+        self,
+        x: Float[ArrayLike, "h w c"],
+        time_emb: Float[ArrayLike, "c_"],
+        deterministic: bool,
+    ) -> Float[Array, "h w {self.dim}"]:
         h = Block(self.dim, self.kernel_size, self.num_groups, 0.0, self.dtype)(
-            x, deterministic
+            x, deterministic=True
         )
 
-        scale_shift = None
-        if time_emb is not None:
-            time_emb = nn.silu(time_emb)
-
-            scale = nn.DenseGeneral(self.dim, dtype=self.dtype)(time_emb)
-            scale = jnp.expand_dims(scale, axis=(1, 2))
-
-            shift = nn.DenseGeneral(self.dim, dtype=self.dtype)(time_emb)
-            shift = jnp.expand_dims(shift, axis=(1, 2))
-
-            scale_shift = (scale, shift)
+        time_emb = nn.silu(time_emb)
+        scale_shift = nn.Dense(self.dim * 2, dtype=self.dtype)(time_emb)
+        scale, shift = jnp.split(scale_shift, 2, axis=-1)
 
         h = Block(
             self.dim, self.kernel_size, self.num_groups, self.dropout, self.dtype
-        )(h, deterministic, scale_shift=scale_shift)
+        )(h, deterministic, scale_shift=(scale, shift))
 
-        if x.shape[-1] != self.dim:
+        if jnp.shape(x)[-1] != self.dim:
             x = nn.Conv(self.dim, kernel_size=(1, 1))(x)
 
-        x = x + h
-        return x
+        return h + x
 
 
 class ResidualAttentionBlock(nn.Module):
@@ -150,21 +143,15 @@ class ResidualAttentionBlock(nn.Module):
     dtype: Dtype
 
     @nn.compact
-    def __call__(self, x):
-        """
-        Args:
-            x: array of shape `[batch_size, width, height, dim]`
-        """
-
-        res = x
-        b, w, h, d = res.shape
-        res = nn.GroupNorm(self.num_groups, dtype=self.dtype)(res)
-        res = jnp.reshape(res, (b, w * h, d))
-        res = nn.SelfAttention(num_heads=self.num_heads, dtype=self.dtype)(res)
-        res = jnp.reshape(res, (b, w, h, self.dim))
-
-        x = x + res
-        return x
+    def __call__(self, x: Float[ArrayLike, "h w c"]) -> Float[Array, "h w c"]:
+        w, h, c = jnp.shape(x)
+        res = nn.GroupNorm(self.num_groups, dtype=self.dtype)(x)
+        res = jnp.reshape(res, (w * h, c))
+        res = nn.MultiHeadDotProductAttention(
+            self.num_heads, self.dtype, qkv_features=self.dim, out_features=c
+        )(res)
+        res = jnp.reshape(res, (w, h, c))
+        return res + x
 
 
 class UNet(Model):
@@ -176,7 +163,6 @@ class UNet(Model):
     attention_num_heads: int
     num_res_blocks: int
 
-    sinusoidal_embed_dim: int
     time_embed_dim: int
 
     num_groups: int
@@ -186,12 +172,9 @@ class UNet(Model):
 
     @nn.compact
     def forward(
-        self,
-        x: Float[ArrayLike, "batch height width channels"],
-        time: Float[ArrayLike, "batch"],
-        train: bool = True,
-    ) -> Float[ArrayLike, "batch height width channels"]:
-        channels = x.shape[-1]
+        self, x: Float[ArrayLike, "h w c"], t: Float[ArrayLike, ""], train: bool = True
+    ) -> Float[Array, "h w c"]:
+        channels = jnp.shape(x)[-1]
 
         res = partial(
             ResnetBlock,
@@ -207,12 +190,8 @@ class UNet(Model):
             dtype=self.dtype,
         )
 
-        t = TimeEmbedding(self.time_embed_dim, self.sinusoidal_embed_dim, self.dtype)(
-            jnp.expand_dims(time, axis=-1)
-        )
-        x = nn.Conv(
-            self.dim_init, (self.kernel_size, self.kernel_size), dtype=self.dtype
-        )(x)
+        time_emb = TimeEmbedding(self.dim_init, self.time_embed_dim, self.dtype)(t)
+        x = nn.Conv(self.dim_init, self.kernel_size, dtype=self.dtype)(x)
 
         hs = [x]
         # downsample
@@ -221,9 +200,10 @@ class UNet(Model):
             dim = self.dim_init * dim_mult
 
             for _ in range(self.num_res_blocks):
-                x = res(dim)(x, not train, time_emb=t)
-                if x.shape[1] in self.attention_resolutions:
-                    # apply attention at certain levels of resolutions
+                x = res(dim)(x, time_emb, deterministic=not train)
+
+                # apply attention at certain levels of resolutions
+                if jnp.shape(x)[0] in self.attention_resolutions:
                     x = res_atten(dim)(x)
 
                 hs.append(x)
@@ -234,9 +214,9 @@ class UNet(Model):
 
         # middle
         dim_mid = self.dim_init * self.dim_mults[-1]
-        x = res(dim_mid)(x, not train, time_emb=t)
+        x = res(dim_mid)(x, time_emb, deterministic=not train)
         x = res_atten(dim_mid)(x)
-        x = res(dim_mid)(x, not train, time_emb=t)
+        x = res(dim_mid)(x, time_emb, deterministic=not train)
 
         # upsample
         for i, dim_mult in enumerate(reversed(self.dim_mults)):
@@ -246,17 +226,17 @@ class UNet(Model):
             for _ in range(self.num_res_blocks + 1):
                 # concatenate by last (channel) dimension
                 x = jnp.concatenate((x, hs.pop()), axis=-1)
-                x = res(dim)(x, not train, time_emb=t)
-                if x.shape[1] in self.attention_resolutions:
-                    # apply attention at certain levels of resolutions
+                x = res(dim)(x, time_emb, deterministic=not train)
+
+                # apply attention at certain levels of resolutions
+                if jnp.shape(x)[0] in self.attention_resolutions:
                     x = res_atten(dim)(x)
 
             if not is_last:
                 x = UpSample(dim, self.kernel_size, self.dtype)(x)
 
-        assert not hs
+        assert len(hs) == 0, "Not all hidden states are used"
 
         # final
-        x = res(self.dim_init)(x, not train, time_emb=t)
-        x = nn.Conv(channels, kernel_size=(1, 1), dtype=self.dtype)(x)
-        return x
+        x = res(self.dim_init)(x, time_emb, deterministic=not train)
+        return nn.Conv(channels, kernel_size=1, dtype=self.dtype)(x)
