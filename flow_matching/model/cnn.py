@@ -1,6 +1,6 @@
 import flax.linen as nn
 import jax.numpy as jnp
-from jaxtyping import Array, ArrayLike, Float
+from jaxtyping import Array, ArrayLike, Float, PRNGKeyArray
 
 from flow_matching.model.base import Model
 
@@ -10,7 +10,11 @@ class CNN(Model):
 
     @nn.compact
     def forward(
-        self, x: Float[ArrayLike, "h w c"], t: Float[ArrayLike, ""]
+        self,
+        x: Float[ArrayLike, "h w c"],
+        t: Float[ArrayLike, ""],
+        train: bool,
+        rng: PRNGKeyArray | None = None,
     ) -> Float[Array, "h w c"]:
         h, w, c = jnp.shape(x)
         t = jnp.expand_dims(t, axis=0)

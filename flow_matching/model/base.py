@@ -17,20 +17,26 @@ class ModelMetrics(Collection):
 
 class Model(nn.Module):
     def __call__(
-        self, x1: Float[ArrayLike, "batch *dims"], rng: PRNGKeyArray
+        self, x1: Float[ArrayLike, "batch *dims"], rng: PRNGKeyArray, train: bool
     ) -> tuple[Loss, ModelMetrics]:
         batch = jnp.shape(x1)[0]
-        t_rng, x_rng = jax.random.split(rng)
+        t_rng, x_rng, fwd_rng = jax.random.split(rng, 3)
 
         t = jax.random.uniform(t_rng, (batch,))
         x = jax.vmap(gaussian_flow.sample)(t, x1, jax.random.split(x_rng, batch))
 
         u_target = jax.vmap(gaussian_flow.u)(x, t, x1)
-        u_pred = jax.vmap(self.forward)(x, t)
+        u_pred = jax.vmap(self.forward, in_axes=(0, 0, None, 0))(
+            x, t, train, jax.random.split(fwd_rng, batch)
+        )
         loss = jnp.mean(jnp.sum((u_pred - u_target) ** 2, axis=-1))
         return loss, ModelMetrics.single_from_model_output(loss=loss)
 
     def forward(
-        self, x: Float[ArrayLike, "*dims"], t: Float[ArrayLike, ""]
+        self,
+        x: Float[ArrayLike, "*dims"],
+        t: Float[ArrayLike, ""],
+        train: bool,
+        rng: PRNGKeyArray | None = None,
     ) -> Float[Array, "*dims"]:
         raise NotImplementedError

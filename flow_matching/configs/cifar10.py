@@ -29,25 +29,25 @@ def get_config():
     config.batch_size = 64
 
     config.dataset = dict(
-        name="mnist",
+        name="cifar10",
         seed=0,
     )
     config.model = dict(
         name="unet",
-        dim_init=32,
+        dim_init=128,
         kernel_size=3,
-        dim_mults=[1, 2, 4, 8],
+        dim_mults=[1, 2, 2, 2],
         attention_resolutions=[16],
         attention_num_heads=4,
-        num_res_blocks=1,
-        time_embed_dim=32 * 4,
+        num_res_blocks=2,
+        time_embed_dim=128 * 4,
         num_groups=4,
-        dropout=0,
+        dropout=0.1,
         dtype=jnp.bfloat16,
     )
     config.optimizer = dict(
         name="adam",
-        learning_rate=1e-4,
+        learning_rate=2e-4,
     )
 
     return config_dict.FrozenConfigDict(config)

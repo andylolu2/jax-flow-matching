@@ -4,11 +4,17 @@ from typing import Any, Collection, Sequence
 import flax.linen as nn
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, ArrayLike, Float
+from jaxtyping import Array, ArrayLike, Float, Key, PRNGKeyArray
 
 from flow_matching.model.base import Model
 
 Dtype = Any
+
+
+def _optional_split(
+    rng: Key[ArrayLike, ""] | None, n: int = 2
+) -> Key[Array, "{n}"] | tuple[None, ...]:
+    return jax.random.split(rng, n) if rng is not None else (None,) * n
 
 
 class UpSample(nn.Module):
@@ -18,9 +24,6 @@ class UpSample(nn.Module):
 
     @nn.compact
     def __call__(self, x: Float[ArrayLike, "h w c"]) -> Float[Array, "{2*h} {2*w} c"]:
-        # h, w, c = jnp.shape(x)
-        # x_ = jax.image.resize(x, (2 * h, 2 * w, c), method="nearest")
-        # x_ = nn.Conv(self.dim, self.kernel_size, dtype=self.dtype)(x_)
         x_ = nn.ConvTranspose(
             self.dim,
             (self.kernel_size, self.kernel_size),
@@ -37,9 +40,6 @@ class DownSample(nn.Module):
 
     @nn.compact
     def __call__(self, x: Float[ArrayLike, "h w c"]) -> Float[Array, "{h//2} {w//2} c"]:
-        # h, w, c = jnp.shape(x)
-        # x_ = jax.image.resize(x, (h // 2, w // 2, c), method="linear")
-        # x_ = nn.Conv(self.dim, self.kernel_size, dtype=self.dtype)(x_)
         x_ = nn.Conv(
             self.dim,
             (self.kernel_size, self.kernel_size),
@@ -89,12 +89,13 @@ class Block(nn.Module):
     def __call__(
         self,
         x: Float[ArrayLike, "h w c"],
-        deterministic: bool,
+        use_dropput: bool,
+        rng: PRNGKeyArray | None,
         scale_shift: tuple[Float[ArrayLike, "c"], Float[ArrayLike, "c"]] | None = None,
     ) -> Float[Array, "h w c"]:
         x_ = nn.GroupNorm(self.num_groups, dtype=self.dtype)(x)
         x_ = nn.gelu(x_)
-        x_ = nn.Dropout(rate=self.dropout)(x_, deterministic)
+        x_ = nn.Dropout(rate=self.dropout)(x_, deterministic=not use_dropput, rng=rng)
         x_ = nn.Conv(self.dim, self.kernel_size, dtype=self.dtype)(x_)
 
         if scale_shift is not None:
@@ -116,10 +117,13 @@ class ResnetBlock(nn.Module):
         self,
         x: Float[ArrayLike, "h w c"],
         time_emb: Float[ArrayLike, "c_"],
-        deterministic: bool,
+        train: bool,
+        rng: PRNGKeyArray | None,
     ) -> Float[Array, "h w {self.dim}"]:
+        rng1, rng2 = _optional_split(rng)
+
         h = Block(self.dim, self.kernel_size, self.num_groups, 0.0, self.dtype)(
-            x, deterministic=True
+            x, use_dropput=False, rng=rng1
         )
 
         time_emb = nn.silu(time_emb)
@@ -128,7 +132,7 @@ class ResnetBlock(nn.Module):
 
         h = Block(
             self.dim, self.kernel_size, self.num_groups, self.dropout, self.dtype
-        )(h, deterministic, scale_shift=(scale, shift))
+        )(h, use_dropput=train, rng=rng2, scale_shift=(scale, shift))
 
         if jnp.shape(x)[-1] != self.dim:
             x = nn.Conv(self.dim, kernel_size=(1, 1))(x)
@@ -144,13 +148,13 @@ class ResidualAttentionBlock(nn.Module):
 
     @nn.compact
     def __call__(self, x: Float[ArrayLike, "h w c"]) -> Float[Array, "h w c"]:
-        w, h, c = jnp.shape(x)
+        h, w, c = jnp.shape(x)
         res = nn.GroupNorm(self.num_groups, dtype=self.dtype)(x)
-        res = jnp.reshape(res, (w * h, c))
+        res = jnp.reshape(res, (h * w, c))
         res = nn.MultiHeadDotProductAttention(
             self.num_heads, self.dtype, qkv_features=self.dim, out_features=c
         )(res)
-        res = jnp.reshape(res, (w, h, c))
+        res = jnp.reshape(res, (h, w, c))
         return res + x
 
 
@@ -172,7 +176,11 @@ class UNet(Model):
 
     @nn.compact
     def forward(
-        self, x: Float[ArrayLike, "h w c"], t: Float[ArrayLike, ""], train: bool = True
+        self,
+        x: Float[ArrayLike, "h w c"],
+        t: Float[ArrayLike, ""],
+        train: bool,
+        rng: PRNGKeyArray | None = None,
     ) -> Float[Array, "h w c"]:
         channels = jnp.shape(x)[-1]
 
@@ -200,7 +208,8 @@ class UNet(Model):
             dim = self.dim_init * dim_mult
 
             for _ in range(self.num_res_blocks):
-                x = res(dim)(x, time_emb, deterministic=not train)
+                rng, rng_ = _optional_split(rng)
+                x = res(dim)(x, time_emb, train, rng_)
 
                 # apply attention at certain levels of resolutions
                 if jnp.shape(x)[0] in self.attention_resolutions:
@@ -214,9 +223,11 @@ class UNet(Model):
 
         # middle
         dim_mid = self.dim_init * self.dim_mults[-1]
-        x = res(dim_mid)(x, time_emb, deterministic=not train)
+        rng, rng_ = _optional_split(rng)
+        x = res(dim_mid)(x, time_emb, train, rng_)
         x = res_atten(dim_mid)(x)
-        x = res(dim_mid)(x, time_emb, deterministic=not train)
+        rng, rng_ = _optional_split(rng)
+        x = res(dim_mid)(x, time_emb, train, rng_)
 
         # upsample
         for i, dim_mult in enumerate(reversed(self.dim_mults)):
@@ -226,7 +237,8 @@ class UNet(Model):
             for _ in range(self.num_res_blocks + 1):
                 # concatenate by last (channel) dimension
                 x = jnp.concatenate((x, hs.pop()), axis=-1)
-                x = res(dim)(x, time_emb, deterministic=not train)
+                rng, rng_ = _optional_split(rng)
+                x = res(dim)(x, time_emb, train, rng_)
 
                 # apply attention at certain levels of resolutions
                 if jnp.shape(x)[0] in self.attention_resolutions:
@@ -238,5 +250,5 @@ class UNet(Model):
         assert len(hs) == 0, "Not all hidden states are used"
 
         # final
-        x = res(self.dim_init)(x, time_emb, deterministic=not train)
+        x = res(self.dim_init)(x, time_emb, train, rng)
         return nn.Conv(channels, kernel_size=1, dtype=self.dtype)(x)

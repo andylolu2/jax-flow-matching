@@ -3,7 +3,7 @@ import math
 import flax.linen as nn
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, ArrayLike, Float
+from jaxtyping import Array, ArrayLike, Float, PRNGKeyArray
 
 from flow_matching.model.base import Model
 
@@ -13,7 +13,11 @@ class MLP(Model):
 
     @nn.compact
     def forward(
-        self, x: Float[ArrayLike, "*dims"], t: Float[ArrayLike, ""]
+        self,
+        x: Float[ArrayLike, "*dims"],
+        t: Float[ArrayLike, ""],
+        train: bool,
+        rng: PRNGKeyArray | None = None,
     ) -> Float[Array, "*dims"]:
         dims = jnp.shape(x)
         x = jnp.reshape(x, (-1))

@@ -22,6 +22,7 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 from ml_collections import FrozenConfigDict, config_flags
 
 from flow_matching.dataset.base import Dataset
+from flow_matching.dataset.cifar10 import Cifar10Dataset
 from flow_matching.dataset.mnist import MnistDataset
 from flow_matching.dataset.toy import ToyDataset
 from flow_matching.model.base import Model, ModelMetrics
@@ -62,6 +63,11 @@ def build_dataset(name: str, **kwargs) -> tuple[Dataset, Dataset]:
             MnistDataset.create(**kwargs, split="train"),
             MnistDataset.create(**kwargs, split="val"),
         )
+    elif name == "cifar10":
+        return (
+            Cifar10Dataset.create(**kwargs, split="train"),
+            Cifar10Dataset.create(**kwargs, split="val"),
+        )
 
     raise ValueError(f"Unknown dataset: {name}")
 
@@ -89,7 +95,7 @@ def train_step(train_state: TrainState, config) -> TrainState:
     x, train_dataset = train_state.train_dataset.sample(config.batch_size)
     rng, fwd_rng = jax.random.split(train_state.rng)
     grads, new_model_metrics = jax.grad(train_state.apply_fn, has_aux=True)(
-        train_state.params, x, fwd_rng
+        train_state.params, x, fwd_rng, train=True
     )
     train_state = train_state.apply_gradients(grads=grads)
     model_metrics = train_state.model_metrics.merge(new_model_metrics)
@@ -128,7 +134,9 @@ def _eval_step(
     model_metrics: ModelMetrics,
 ):
     x, dataset = dataset.sample(batch_size)
-    _, new_model_metrics = train_state.apply_fn(train_state.params, x, train_state.rng)
+    _, new_model_metrics = train_state.apply_fn(
+        train_state.params, x, train_state.rng, train=False
+    )
     model_metrics = model_metrics.merge(new_model_metrics)
     return model_metrics, dataset
 
@@ -166,7 +174,7 @@ def _generate_samples(train_state: TrainState, n: int) -> Float[Array, "{n} ..."
     x0 = jnp.reshape(x0, (n,) + jnp.shape(_x)[1:])
 
     forward_fn = lambda t, x, args: train_state.apply_fn(
-        train_state.params, x, t, method=train_state.forward_fn
+        train_state.params, x, t, train=False, method=train_state.forward_fn
     )
     term = ODETerm(jax.vmap(forward_fn, in_axes=(None, 0, None)))
     solver = Dopri5()
@@ -252,7 +260,7 @@ def main(_):
     model = build_model(**config.model)
     optimizer = build_optimizer(**config.optimizer)
 
-    params = model.init(model_rng, train_dataset.sample(1)[0], fwd_rng)
+    params = model.init(model_rng, train_dataset.sample(1)[0], fwd_rng, train=True)
     train_state = TrainState.create(
         apply_fn=model.apply,
         forward_fn=model.forward,
@@ -269,12 +277,12 @@ def main(_):
         train_state = train_step(train_state, config)
 
         step = int(train_state.step)
-        if config.log_steps > 0 and step % config.log_steps == 0:
+        if config.log.steps > 0 and step % config.log.steps == 0:
             log_metrics(train_state, writer)
             train_state = train_state.replace(
                 train_metrics=TrainMetrics.empty(), model_metrics=ModelMetrics.empty()
             )
-        if config.save_steps > 0 and step % config.save_steps == 0:
+        if config.save.steps > 0 and step % config.save.steps == 0:
             save_checkpoint(train_state, Path(config.checkpoint_dir) / f"step_{step}")
         if config.eval.steps > 0 and step % config.eval.steps == 0:
             evaluate(

@@ -9,30 +9,28 @@ from flow_matching.dataset.base import Dataset
 
 
 @struct.dataclass
-class MnistDataset(Dataset):
+class Cifar10Dataset(Dataset):
     img: Float[Array, "n 28 28"]
 
     @classmethod
     def create(cls, seed: int, split: str) -> Self:
-        ds = datasets.load_dataset("mnist")
+        ds = datasets.load_dataset("cifar10")
         assert isinstance(ds, datasets.DatasetDict)
 
         if split == "train":
-            img = jnp.array(ds["train"]["image"][:50000])
+            img = jnp.array(ds["train"]["img"][:40000])
         elif split == "val":
-            img = jnp.array(ds["train"]["image"][50000:])
+            img = jnp.array(ds["train"]["img"][40000:])
         else:
             raise ValueError(f"Unknown split: {split}")
 
-        img = jax.image.resize(img, (len(img), 32, 32), "linear")
         img = img.astype(jnp.float32) / 255.0  # Int[0, 255] -> Float[0, 1]
-        img = jnp.expand_dims(img, axis=-1)  # (n, 28, 28) -> (n, 28, 28, 1)
 
         return cls(epoch=0, step=0, rng=jax.random.PRNGKey(seed), img=img)
 
     def sample(
         self, batch_size: int
-    ) -> tuple[Shaped[Array, "{batch_size} 32 32 1"], Self]:
+    ) -> tuple[Shaped[Array, "{batch_size} 32 32 3"], Self]:
         assert (
             0 < batch_size <= len(self.img)
         ), f"Invalid {batch_size=} but {self.img.shape=}"
