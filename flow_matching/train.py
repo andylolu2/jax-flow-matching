@@ -185,16 +185,11 @@ def _generate_samples(train_state: TrainState, n: int) -> Float[Array, "{n} ..."
 
 
 def generate_samples(
-    train_state: TrainState,
-    n: int,
-    save_path: Path | str,
-    writer: metric_writers.MetricWriter,
+    train_state: TrainState, n: int, writer: metric_writers.MetricWriter
 ) -> None:
     logging.info("Generating samples from model")
 
     x1 = _generate_samples(train_state, n)
-
-    Path(save_path).mkdir(exist_ok=True, parents=True)
 
     if jnp.ndim(x1) == 2 and jnp.shape(x1)[-1] == 2:  # 2D samples
         x_real, _ = train_state.train_dataset.sample(n)
@@ -293,12 +288,7 @@ def main(_):
                 writer,
             )
         if config.generate.steps > 0 and step % config.generate.steps == 0:
-            generate_samples(
-                train_state,
-                config.generate.samples,
-                Path(config.checkpoint_dir) / f"step_{step}",
-                writer,
-            )
+            generate_samples(train_state, config.generate.samples, writer)
 
 
 if __name__ == "__main__":

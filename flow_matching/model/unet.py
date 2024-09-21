@@ -24,13 +24,9 @@ class UpSample(nn.Module):
 
     @nn.compact
     def __call__(self, x: Float[ArrayLike, "h w c"]) -> Float[Array, "{2*h} {2*w} c"]:
-        x_ = nn.ConvTranspose(
-            self.dim,
-            (self.kernel_size, self.kernel_size),
-            strides=(2, 2),
-            dtype=self.dtype,
-        )(x)
-        return x_
+        h, w, c = jnp.shape(x)
+        x_ = jax.image.resize(x, [2 * h, 2 * w, c], method="nearest", antialias=False)
+        return nn.Conv(self.dim, self.kernel_size, dtype=self.dtype)(x_)
 
 
 class DownSample(nn.Module):
@@ -40,13 +36,12 @@ class DownSample(nn.Module):
 
     @nn.compact
     def __call__(self, x: Float[ArrayLike, "h w c"]) -> Float[Array, "{h//2} {w//2} c"]:
-        x_ = nn.Conv(
+        return nn.Conv(
             self.dim,
             (self.kernel_size, self.kernel_size),
             strides=(2, 2),
             dtype=self.dtype,
         )(x)
-        return x_
 
 
 class SinusoidalPosEmbedding(nn.Module):
@@ -78,33 +73,6 @@ class TimeEmbedding(nn.Module):
         return x
 
 
-class Block(nn.Module):
-    dim: int
-    kernel_size: int
-    num_groups: int
-    dropout: float
-    dtype: Dtype
-
-    @nn.compact
-    def __call__(
-        self,
-        x: Float[ArrayLike, "h w c"],
-        use_dropput: bool,
-        rng: PRNGKeyArray | None,
-        scale_shift: tuple[Float[ArrayLike, "c"], Float[ArrayLike, "c"]] | None = None,
-    ) -> Float[Array, "h w c"]:
-        x_ = nn.GroupNorm(self.num_groups, dtype=self.dtype)(x)
-        x_ = nn.gelu(x_)
-        x_ = nn.Dropout(rate=self.dropout)(x_, deterministic=not use_dropput, rng=rng)
-        x_ = nn.Conv(self.dim, self.kernel_size, dtype=self.dtype)(x_)
-
-        if scale_shift is not None:
-            scale, shift = scale_shift
-            x_ = x_ * (1 + scale) + shift
-
-        return x_
-
-
 class ResnetBlock(nn.Module):
     dim: int
     kernel_size: int
@@ -120,22 +88,22 @@ class ResnetBlock(nn.Module):
         train: bool,
         rng: PRNGKeyArray | None,
     ) -> Float[Array, "h w {self.dim}"]:
-        rng1, rng2 = _optional_split(rng)
+        h = x
+        h = nn.GroupNorm(self.num_groups)(h)
+        h = nn.silu(h)
+        h = nn.Conv(self.dim, self.kernel_size, dtype=self.dtype)(h)
 
-        h = Block(self.dim, self.kernel_size, self.num_groups, 0.0, self.dtype)(
-            x, use_dropput=False, rng=rng1
-        )
+        h += nn.Dense(self.dim, dtype=self.dtype)(nn.silu(time_emb))
 
-        time_emb = nn.silu(time_emb)
-        scale_shift = nn.Dense(self.dim * 2, dtype=self.dtype)(time_emb)
-        scale, shift = jnp.split(scale_shift, 2, axis=-1)
-
-        h = Block(
-            self.dim, self.kernel_size, self.num_groups, self.dropout, self.dtype
-        )(h, use_dropput=train, rng=rng2, scale_shift=(scale, shift))
+        h = nn.GroupNorm(self.num_groups)(h)
+        h = nn.silu(h)
+        h = nn.Dropout(rate=self.dropout)(h, deterministic=not train, rng=rng)
+        h = nn.Conv(
+            self.dim, self.kernel_size, dtype=self.dtype, kernel_init=nn.zeros_init()
+        )(h)
 
         if jnp.shape(x)[-1] != self.dim:
-            x = nn.Conv(self.dim, kernel_size=(1, 1))(x)
+            x = nn.Conv(self.dim, kernel_size=(1, 1), dtype=self.dtype)(x)
 
         return h + x
 
@@ -149,10 +117,14 @@ class ResidualAttentionBlock(nn.Module):
     @nn.compact
     def __call__(self, x: Float[ArrayLike, "h w c"]) -> Float[Array, "h w c"]:
         h, w, c = jnp.shape(x)
-        res = nn.GroupNorm(self.num_groups, dtype=self.dtype)(x)
+        res = nn.GroupNorm(self.num_groups)(x)
         res = jnp.reshape(res, (h * w, c))
         res = nn.MultiHeadDotProductAttention(
-            self.num_heads, self.dtype, qkv_features=self.dim, out_features=c
+            self.num_heads,
+            self.dtype,
+            qkv_features=self.dim,
+            out_features=c,
+            out_kernel_init=nn.zeros_init(),
         )(res)
         res = jnp.reshape(res, (h, w, c))
         return res + x
@@ -250,5 +222,8 @@ class UNet(Model):
         assert len(hs) == 0, "Not all hidden states are used"
 
         # final
-        x = res(self.dim_init)(x, time_emb, train, rng)
-        return nn.Conv(channels, kernel_size=1, dtype=self.dtype)(x)
+        x = nn.GroupNorm(self.num_groups)(x)
+        x = nn.silu(x)
+        return nn.Conv(
+            channels, self.kernel_size, dtype=self.dtype, kernel_init=nn.zeros_init()
+        )(x)

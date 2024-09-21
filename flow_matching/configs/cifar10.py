@@ -8,7 +8,7 @@ def get_config():
     config = config_dict.ConfigDict()
 
     config.seed = 0
-    config.num_steps = 50000
+    config.num_steps = 500000
     config.log = dict(
         steps=500,
     )
@@ -16,12 +16,12 @@ def get_config():
         steps=10000,
     )
     config.eval = dict(
-        steps=2000,
-        n_batches=500,
+        steps=5000,
+        n_batches=1000,
         batch_size=128,
     )
     config.generate = dict(
-        steps=2000,
+        steps=5000,
         samples=100,
     )
 
@@ -41,7 +41,7 @@ def get_config():
         attention_num_heads=4,
         num_res_blocks=2,
         time_embed_dim=128 * 4,
-        num_groups=4,
+        num_groups=32,
         dropout=0.1,
         dtype=jnp.bfloat16,
     )
