@@ -24,9 +24,12 @@ class UpSample(nn.Module):
 
     @nn.compact
     def __call__(self, x: Float[ArrayLike, "h w c"]) -> Float[Array, "{2*h} {2*w} c"]:
-        h, w, c = jnp.shape(x)
-        x_ = jax.image.resize(x, [2 * h, 2 * w, c], method="nearest", antialias=False)
-        return nn.Conv(self.dim, self.kernel_size, dtype=self.dtype)(x_)
+        return nn.ConvTranspose(
+            features=self.dim,
+            kernel_size=(self.kernel_size, self.kernel_size),
+            strides=(2, 2),
+            dtype=self.dtype,
+        )(x)
 
 
 class DownSample(nn.Module):
