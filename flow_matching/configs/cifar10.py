@@ -13,7 +13,7 @@ def get_config():
         steps=500,
     )
     config.save = dict(
-        steps=10000,
+        steps=50000,
     )
     config.eval = dict(
         steps=5000,
