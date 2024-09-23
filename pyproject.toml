@@ -1,0 +1,6 @@
+[tool.ruff.lint]
+select = ["E", "F", "I001"]
+ignore = ["E721", "E731", "F722", "F821"]
+
+[tool.mypy]
+disable_error_code = "import-untyped"
