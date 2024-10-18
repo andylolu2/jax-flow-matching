@@ -1,5 +1,4 @@
 #!/bin/bash
 
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements-cuda.txt
+curl -LsSf https://astral.sh/uv/install.sh | sh
+uv install

@@ -1,6 +1,10 @@
 from flax import struct
 from jaxtyping import Array, PRNGKeyArray, Shaped
+from pydantic import BaseModel
 from typing_extensions import Self
+
+
+class DatasetConfig(BaseModel): ...
 
 
 @struct.dataclass

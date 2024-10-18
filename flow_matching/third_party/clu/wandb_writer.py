@@ -1,11 +1,11 @@
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, Optional, TypeAlias
 
 import numpy as np
 import wandb
 from clu.metric_writers import interface
 
-Array = interface.Array
-Scalar = interface.Scalar
+Array: TypeAlias = interface.Array
+Scalar: TypeAlias = interface.Scalar
 
 
 class WandbWriter(interface.MetricWriter):
@@ -17,6 +17,9 @@ class WandbWriter(interface.MetricWriter):
         values: Mapping[str, Array],
         metadata: Optional[Mapping[str, Any]] = None,
     ):
+        assert (
+            wandb.run is not None
+        ), "wandb.init must be called before writing summaries"
         for k, v in values.items():
             wandb.run.summary[k] = v
         if metadata is not None:

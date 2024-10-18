@@ -1,3 +1,5 @@
+from typing import Literal
+
 import datasets
 import jax
 import jax.numpy as jnp
@@ -5,7 +7,12 @@ from flax import struct
 from jaxtyping import Array, Float, Shaped
 from typing_extensions import Self
 
-from flow_matching.dataset.base import Dataset
+from flow_matching.dataset.base import Dataset, DatasetConfig
+
+
+class Cifar10Config(DatasetConfig):
+    seed: int
+    split: Literal["train", "val"]
 
 
 @struct.dataclass
@@ -13,20 +20,20 @@ class Cifar10Dataset(Dataset):
     img: Float[Array, "n 28 28"]
 
     @classmethod
-    def create(cls, seed: int, split: str) -> Self:
+    def create(cls, config: Cifar10Config) -> Self:
         ds = datasets.load_dataset("cifar10")
         assert isinstance(ds, datasets.DatasetDict)
 
-        if split == "train":
+        if config.split == "train":
             img = jnp.array(ds["train"]["img"][:40000])
-        elif split == "val":
+        elif config.split == "val":
             img = jnp.array(ds["train"]["img"][40000:])
         else:
-            raise ValueError(f"Unknown split: {split}")
+            raise ValueError(f"Unknown split: {config.split}")
 
         img = img.astype(jnp.float32) / 255.0  # Int[0, 255] -> Float[0, 1]
 
-        return cls(epoch=0, step=0, rng=jax.random.PRNGKey(seed), img=img)
+        return cls(epoch=0, step=0, rng=jax.random.PRNGKey(config.seed), img=img)
 
     def sample(
         self, batch_size: int

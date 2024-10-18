@@ -2,8 +2,9 @@ import math
 import tempfile
 from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Callable
 
+import flax.struct
 import fsspec
 import fsspec.generic
 import jax
@@ -12,33 +13,101 @@ import matplotlib.pyplot as plt
 import numpy as np
 import orbax.checkpoint
 import wandb
-from absl import app, flags, logging
+from absl import logging
 from clu import metric_writers
+from clu.metrics import Collection, LastValue
 from diffrax import Dopri5, ODETerm, diffeqsolve
-from jaxtyping import Array, Float
+from flax.training.train_state import TrainState as _TrainState
+from jaxtyping import Array, Float, PRNGKeyArray
 from matplotlib.backends.backend_agg import FigureCanvasAgg
-from ml_collections import FrozenConfigDict, config_flags
+from pydantic import BaseModel
 
-from flow_matching.builder import (
-    TrainMetrics,
-    TrainState,
-    build_dataset,
-    build_model,
-    build_optimizer,
-    build_train_state,
-)
 from flow_matching.dataset.base import Dataset
+from flow_matching.dataset.builder import DatasetConfig, build_dataset
 from flow_matching.model.base import ModelMetrics
+from flow_matching.model.builder import ModelConfig, build_model
+from flow_matching.optimizer.builder import OptimizerConfig, build_optimizer
 from flow_matching.third_party.clu.wandb_writer import WandbWriter
 
-FLAGS = flags.FLAGS
-config_flags.DEFINE_config_file(
-    "config", None, "Training configuration file.", short_name="c", lock_config=False
-)
+if TYPE_CHECKING:
+    from flow_matching.dataset.base import Dataset
+    from flow_matching.model.base import ModelMetrics
+
+
+class LogConfig(BaseModel):
+    steps: int
+
+
+class SaveConfig(BaseModel):
+    steps: int
+
+
+class EvalConfig(BaseModel):
+    steps: int
+    n_batches: int
+    batch_size: int
+
+
+class GenerateConfig(BaseModel):
+    steps: int
+    samples: int
+
+
+class TrainConfig(BaseModel):
+    model: ModelConfig
+    optimizer: OptimizerConfig
+    train_dataset: DatasetConfig
+    val_dataset: DatasetConfig
+    log: LogConfig
+    save: SaveConfig
+    eval: EvalConfig
+    generate: GenerateConfig
+
+    seed: int
+    num_steps: int
+    exp_dir: Path
+    batch_size: int
+
+
+@flax.struct.dataclass
+class TrainMetrics(Collection):
+    step: LastValue.from_output("step")  # type: ignore
+    epoch: LastValue.from_output("epoch")  # type: ignore
+
+
+class TrainState(_TrainState):
+    forward_fn: Callable = flax.struct.field(pytree_node=False)
+    rng: PRNGKeyArray
+    train_metrics: TrainMetrics
+    model_metrics: ModelMetrics
+    train_dataset: Dataset
+    val_dataset: Dataset
+
+
+def build_train_state(config: TrainConfig) -> TrainState:
+    model = build_model(config.model)
+    optimizer = build_optimizer(config.optimizer)
+    train_dataset = build_dataset(config.train_dataset)
+    val_dataset = build_dataset(config.val_dataset)
+
+    rng = jax.random.PRNGKey(config.seed)
+    model_rng, fwd_rng, state_rng = jax.random.split(rng, 3)
+    params = model.init(model_rng, train_dataset.sample(1)[0], fwd_rng, train=True)
+    return TrainState.create(
+        apply_fn=model.apply,
+        forward_fn=model.forward,
+        params=params,
+        tx=optimizer,
+        train_metrics=TrainMetrics.empty(),
+        model_metrics=ModelMetrics.empty(),
+        train_dataset=train_dataset,
+        val_dataset=val_dataset,
+        rng=state_rng,
+    )
 
 
 @partial(jax.jit, static_argnames=("config",))
-def train_step(train_state: TrainState, config) -> TrainState:
+def train_step(train_state: TrainState, config: TrainConfig) -> TrainState:
     x, train_dataset = train_state.train_dataset.sample(config.batch_size)
     rng, fwd_rng = jax.random.split(train_state.rng)
     grads, new_model_metrics = jax.grad(
@@ -130,7 +199,7 @@ def _generate_samples(train_state: TrainState, n: int) -> Float[Array, "{n} ..."
     forward_fn = lambda t, x, args: train_state.apply_fn(
         train_state.params, x, t, train=False, method=train_state.forward_fn
     )
-    term = ODETerm(jax.vmap(forward_fn, in_axes=(None, 0, None)))
+    term: ODETerm = ODETerm(jax.vmap(forward_fn, in_axes=(None, 0, None)))  # type: ignore[call-arg]
     solver = Dopri5()
     solution = diffeqsolve(term, solver, t0=0, t1=0.995, dt0=0.05, y0=x0)
 
@@ -170,17 +239,15 @@ def generate_samples(
         n, h, w, c = jnp.shape(x1)
 
         grid_size = math.ceil(math.sqrt(n))
-        canvas = jnp.zeros((grid_size * h, grid_size * w, c))
+        img = jnp.zeros((grid_size * h, grid_size * w, c))
 
         for i in range(n):
             row = i // grid_size
             col = i % grid_size
-            canvas = canvas.at[row * h : (row + 1) * h, col * w : (col + 1) * w, :].set(
-                x1[i]
-            )
+            img = img.at[row * h : (row + 1) * h, col * w : (col + 1) * w, :].set(x1[i])
 
         fig, ax = plt.subplots()
-        ax.imshow(canvas)
+        ax.imshow(img)
         ax.axis("off")
 
         canvas = FigureCanvasAgg(fig)
@@ -194,26 +261,18 @@ def generate_samples(
         logging.warning("Cannot plot samples with shape %s", jnp.shape(x1))
 
 
-def main(_):
-    config: Any = FrozenConfigDict(FLAGS.config)
+def main(config: TrainConfig) -> None:
     wandb.login()
     wandb.init(project="jax-flow-matching", dir="_wandb")
     writer = metric_writers.AsyncMultiWriter(
         [metric_writers.LoggingWriter(), WandbWriter()]
     )
-    writer.write_hparams(config.to_dict())
+    writer.write_hparams(config.model_dump())
 
-    rng = jax.random.PRNGKey(config.seed)
-    model_rng, fwd_rng, state_rng = jax.random.split(rng, 3)
-    train_dataset, val_dataset = build_dataset(**config.dataset)
-    model = build_model(**config.model)
-    optimizer = build_optimizer(**config.optimizer)
-    train_state = build_train_state(
-        model, optimizer, train_dataset, val_dataset, state_rng
-    )
+    train_state = build_train_state(config)
 
     while train_state.step < config.num_steps:
-        train_state = train_step(train_state, config)
+        train_state: TrainState = train_step(train_state, config)  # type: ignore[no-redef]
 
         step = int(train_state.step)
         if config.log.steps > 0 and step % config.log.steps == 0:
@@ -222,18 +281,14 @@ def main(_):
                 train_metrics=TrainMetrics.empty(), model_metrics=ModelMetrics.empty()
             )
         if config.save.steps > 0 and step % config.save.steps == 0:
-            save_checkpoint(train_state, f"{config.checkpointj_dir}/step_{step}/")
+            save_checkpoint(train_state, f"{config.exp_dir}/step_{step}/")
         if config.eval.steps > 0 and step % config.eval.steps == 0:
             evaluate(
                 train_state,
-                val_dataset,
+                train_state.val_dataset,
                 config.eval.n_batches,
                 config.eval.batch_size,
                 writer,
             )
         if config.generate.steps > 0 and step % config.generate.steps == 0:
             generate_samples(train_state, config.generate.samples, writer)
-
-
-if __name__ == "__main__":
-    app.run(main)

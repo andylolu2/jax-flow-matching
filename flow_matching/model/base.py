@@ -4,10 +4,14 @@ import jax
 import jax.numpy as jnp
 from clu.metrics import Average, Collection
 from jaxtyping import Array, ArrayLike, Float, PRNGKeyArray
+from pydantic import BaseModel
 
 from flow_matching.field import gaussian_flow
 
 Loss = Float[Array, ""]
+
+
+class ModelConfig(BaseModel): ...
 
 
 @flax.struct.dataclass

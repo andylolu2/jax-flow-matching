@@ -4,7 +4,11 @@ from flax import struct
 from jaxtyping import Array, Float, Shaped
 from typing_extensions import Self
 
-from flow_matching.dataset.base import Dataset
+from flow_matching.dataset.base import Dataset, DatasetConfig
+
+
+class ToyConfig(DatasetConfig):
+    seed: int
 
 
 @struct.dataclass
@@ -13,11 +17,11 @@ class ToyDataset(Dataset):
     covariances: Float[Array, "k 2 2"]
 
     @classmethod
-    def create(cls, seed: int) -> Self:
+    def create(cls, config: ToyConfig) -> Self:
         return cls(
             epoch=0,
             step=0,
-            rng=jax.random.PRNGKey(seed),
+            rng=jax.random.PRNGKey(config.seed),
             means=jnp.array([[4.0, -2.0], [-4.0, 3.0]]),
             covariances=jnp.array(
                 [
@@ -47,7 +51,7 @@ if __name__ == "__main__":
 
     import matplotlib.pyplot as plt
 
-    dataset = ToyDataset.create(0)
+    dataset = ToyDataset.create(ToyConfig(seed=0))
     samples, state = dataset.sample(1000)
     plt.scatter(samples[:, 0], samples[:, 1])
 
