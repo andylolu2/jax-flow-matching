@@ -17,7 +17,7 @@ class MnistConfig(DatasetConfig):
 
 @struct.dataclass
 class MnistDataset(Dataset):
-    img: Float[Array, "n 28 28"]
+    img: Float[Array, "n 32 32 1"]
 
     @classmethod
     def create(cls, config: MnistConfig) -> Self:
@@ -33,7 +33,7 @@ class MnistDataset(Dataset):
 
         img = jax.image.resize(img, (len(img), 32, 32), "linear")
         img = img.astype(jnp.float32) / 255.0  # Int[0, 255] -> Float[0, 1]
-        img = jnp.expand_dims(img, axis=-1)  # (n, 28, 28) -> (n, 28, 28, 1)
+        img = jnp.expand_dims(img, axis=-1)
 
         return cls(epoch=0, step=0, rng=jax.random.PRNGKey(config.seed), img=img)
 
@@ -44,7 +44,7 @@ class MnistDataset(Dataset):
             0 < batch_size <= len(self.img)
         ), f"Invalid {batch_size=} but {self.img.shape=}"
 
-        state = jax.lax.cond(
+        state: Self = jax.lax.cond(
             self.step + batch_size > len(self.img),
             lambda: self.replace(epoch=self.epoch + 1, step=0),  # type: ignore
             lambda: self,

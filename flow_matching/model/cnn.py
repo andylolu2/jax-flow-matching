@@ -7,7 +7,7 @@ from flow_matching.model.base import Model, ModelConfig
 
 
 class CNNConfig(ModelConfig):
-    dims: list[int]
+    dims: tuple[int, ...]
 
 
 class CNN(Model):

@@ -1,20 +1,20 @@
-from typing import Collection
-
 import flax.linen as nn
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, ArrayLike, DTypeLike, Float, Key, PRNGKeyArray
+from pydantic import ConfigDict
 from typing_extensions import Self
 
 from flow_matching.model.base import Model, ModelConfig
 
 
 class UNetConfig(ModelConfig):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
     dim_init: int
     kernel_size: int
-    dim_mults: list[int]
+    dim_mults: tuple[int, ...]
 
-    attention_resolutions: Collection[int]
+    attention_resolutions: tuple[int, ...]
     attention_num_heads: int
     num_res_blocks: int
 

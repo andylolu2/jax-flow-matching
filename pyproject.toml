@@ -3,7 +3,7 @@ name = "jax-flow-matching"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = "~=3.11"
 dependencies = [
     "clu>=0.0.12",
     "datasets>=3.0.1",
@@ -14,10 +14,11 @@ dependencies = [
     "jax[cuda]>=0.4.34 ; sys_platform == 'linux'",
     "jaxtyping>=0.2.34",
     "matplotlib>=3.9.2",
-    "numpy>=2.1.2",
-    "orbax-checkpoint",
+    "numpy<2",
+    "tensorflow-cpu>=2.14.0",
     "pydantic>=2.9.2",
     "wandb>=0.18.5",
+    "orbax-checkpoint",
 ]
 
 [tool.ruff.lint]

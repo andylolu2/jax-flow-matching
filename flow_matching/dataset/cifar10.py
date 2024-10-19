@@ -42,7 +42,7 @@ class Cifar10Dataset(Dataset):
             0 < batch_size <= len(self.img)
         ), f"Invalid {batch_size=} but {self.img.shape=}"
 
-        state = jax.lax.cond(
+        state: Self = jax.lax.cond(
             self.step + batch_size > len(self.img),
             lambda: self.replace(epoch=self.epoch + 1, step=0),  # type: ignore
             lambda: self,

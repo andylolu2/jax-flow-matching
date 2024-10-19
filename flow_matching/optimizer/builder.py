@@ -1,5 +1,6 @@
 import optax
-from pydantic import BaseModel
+
+from flow_matching.third_party.pydantic import BaseModel
 
 
 class OptimizerConfig(BaseModel):

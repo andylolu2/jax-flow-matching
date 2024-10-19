@@ -15,7 +15,7 @@ from flow_matching.train import (
 
 config = TrainConfig(
     model=MLPConfig(
-        dims=[32, 32],
+        dims=(32, 32),
     ),
     optimizer=AdamConfig(
         learning_rate=3e-3,
@@ -41,9 +41,11 @@ config = TrainConfig(
         steps=1000,
         samples=1000,
     ),
-    seed=0,
     num_steps=5000,
-    exp_dir=Path("checkpoints") / datetime.now().strftime("%Y%m%d-%H%M%S"),
+    exp_dir=(Path("checkpoints") / datetime.now().strftime("%Y%m%d-%H%M%S"))
+    .resolve()
+    .absolute()
+    .as_uri(),
     batch_size=64,
 )
 

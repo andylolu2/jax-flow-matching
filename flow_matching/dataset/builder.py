@@ -1,11 +1,7 @@
-from typing import TYPE_CHECKING
-
+from flow_matching.dataset.base import Dataset, DatasetConfig
 from flow_matching.dataset.cifar10 import Cifar10Config, Cifar10Dataset
 from flow_matching.dataset.mnist import MnistConfig, MnistDataset
 from flow_matching.dataset.toy import ToyConfig, ToyDataset
-
-if TYPE_CHECKING:
-    from flow_matching.dataset.base import Dataset, DatasetConfig
 
 
 def build_dataset(config: DatasetConfig) -> Dataset:

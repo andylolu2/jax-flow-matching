@@ -10,7 +10,7 @@ from flow_matching.model.base import Model, ModelConfig
 
 
 class MLPConfig(ModelConfig):
-    dims: list[int]
+    dims: tuple[int, ...]
 
 
 class MLP(Model):

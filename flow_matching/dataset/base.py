@@ -1,7 +1,8 @@
 from flax import struct
 from jaxtyping import Array, PRNGKeyArray, Shaped
-from pydantic import BaseModel
 from typing_extensions import Self
+
+from flow_matching.third_party.pydantic import BaseModel
 
 
 class DatasetConfig(BaseModel): ...

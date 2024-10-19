@@ -19,8 +19,8 @@ config = TrainConfig(
     model=UNetConfig(
         dim_init=128,
         kernel_size=3,
-        dim_mults=[1, 2, 2, 2],
-        attention_resolutions=[16],
+        dim_mults=(1, 2, 2, 2),
+        attention_resolutions=(16,),
         attention_num_heads=4,
         num_res_blocks=2,
         time_embed_dim=128 * 4,
@@ -54,9 +54,11 @@ config = TrainConfig(
         steps=5000,
         samples=100,
     ),
-    seed=0,
     num_steps=500000,
-    exp_dir=Path("checkpoints") / datetime.now().strftime("%Y%m%d-%H%M%S"),
+    exp_dir=(Path("checkpoints") / datetime.now().strftime("%Y%m%d-%H%M%S"))
+    .resolve()
+    .absolute()
+    .as_uri(),
     batch_size=64,
 )
 

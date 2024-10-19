@@ -2,7 +2,7 @@ import math
 import tempfile
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import Any, Callable
 
 import flax.struct
 import fsspec
@@ -11,6 +11,7 @@ import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
+import optax
 import orbax.checkpoint
 import wandb
 from absl import logging
@@ -20,18 +21,14 @@ from diffrax import Dopri5, ODETerm, diffeqsolve
 from flax.training.train_state import TrainState as _TrainState
 from jaxtyping import Array, Float, PRNGKeyArray
 from matplotlib.backends.backend_agg import FigureCanvasAgg
-from pydantic import BaseModel
 
 from flow_matching.dataset.base import Dataset
 from flow_matching.dataset.builder import DatasetConfig, build_dataset
 from flow_matching.model.base import ModelMetrics
 from flow_matching.model.builder import ModelConfig, build_model
 from flow_matching.optimizer.builder import OptimizerConfig, build_optimizer
-from flow_matching.third_party.clu.wandb_writer import WandbWriter
-
-if TYPE_CHECKING:
-    from flow_matching.dataset.base import Dataset
-    from flow_matching.model.base import ModelMetrics
+from flow_matching.third_party.clu import WandbWriter
+from flow_matching.third_party.pydantic import BaseModel
 
 
 class LogConfig(BaseModel):
@@ -63,10 +60,18 @@ class TrainConfig(BaseModel):
     eval: EvalConfig
     generate: GenerateConfig
 
-    seed: int
     num_steps: int
-    exp_dir: Path
+    exp_dir: str
     batch_size: int
+    seed: int = 0
+    dry_run: bool = False
+    num_compile_steps: int = 5
+    ema_step_size: float = 1 - 0.9999
+
+    def __post_init__(self):
+        assert self.log.steps % self.num_compile_steps == 0
+        assert self.save.steps % self.num_compile_steps == 0
+        assert self.eval.steps % self.num_compile_steps == 0
 
 
 @flax.struct.dataclass
@@ -82,6 +87,16 @@ class TrainState(_TrainState):
     model_metrics: ModelMetrics
     train_dataset: Dataset
     val_dataset: Dataset
+    ema_params: flax.core.FrozenDict[str, Any] = flax.struct.field(pytree_node=True)
+
+    def apply_gradients(self, *, grads, ema_step_size: float, **kwargs):
+        next_state = super().apply_gradients(grads=grads, **kwargs)
+        new_ema_params = optax.incremental_update(
+            new_tensors=next_state.params,
+            old_tensors=self.ema_params,
+            step_size=ema_step_size,
+        )
+        return next_state.replace(ema_params=new_ema_params)
 
 
 def build_train_state(config: TrainConfig) -> TrainState:
@@ -92,11 +107,13 @@ def build_train_state(config: TrainConfig) -> TrainState:
 
     rng = jax.random.PRNGKey(config.seed)
     model_rng, fwd_rng, state_rng = jax.random.split(rng, 3)
-    params = model.init(model_rng, train_dataset.sample(1)[0], fwd_rng, train=True)
+    x, _ = train_dataset.sample(1)
+    params = model.init(model_rng, x[0], fwd_rng, train=True)
     return TrainState.create(
         apply_fn=model.apply,
         forward_fn=model.forward,
         params=params,
+        ema_params=params,
         tx=optimizer,
         train_metrics=TrainMetrics.empty(),
         model_metrics=ModelMetrics.empty(),
@@ -108,24 +125,44 @@ def build_train_state(config: TrainConfig) -> TrainState:
 
 @partial(jax.jit, static_argnames=("config",))
 def train_step(train_state: TrainState, config: TrainConfig) -> TrainState:
-    x, train_dataset = train_state.train_dataset.sample(config.batch_size)
-    rng, fwd_rng = jax.random.split(train_state.rng)
-    grads, new_model_metrics = jax.grad(
-        jax.vmap(train_state.apply_fn, in_axes=(None, 0, 0, None)), has_aux=True
-    )(train_state.params, x, jax.random.split(fwd_rng, config.batch_size), train=True)
-    train_state = train_state.apply_gradients(grads=grads)
-    model_metrics = train_state.model_metrics.merge(new_model_metrics)
-    new_train_metrics = TrainMetrics.single_from_model_output(
-        step=train_state.step,
-        epoch=train_state.train_dataset.epoch,
+    def single_step(train_state: TrainState) -> TrainState:
+        x, train_dataset = train_state.train_dataset.sample(config.batch_size)
+        rng, fwd_rng = jax.random.split(train_state.rng)
+
+        def loss_fn(params):
+            losses, metrics = jax.vmap(
+                train_state.apply_fn, in_axes=(None, 0, 0, None)
+            )(params, x, jax.random.split(fwd_rng, config.batch_size), True)
+            return jnp.mean(losses), metrics
+
+        grads, new_model_metrics = jax.grad(loss_fn, has_aux=True)(train_state.params)
+        train_state = train_state.apply_gradients(
+            grads=grads,
+            ema_step_size=config.ema_step_size,
+            train_dataset=train_dataset,
+            rng=rng,
+        )
+
+        model_metrics = jax.lax.fori_loop(
+            0,
+            config.batch_size,
+            lambda i, acc: acc.merge(jax.tree_map(lambda x: x[i], new_model_metrics)),
+            train_state.model_metrics,
+        )
+        train_metrics = train_state.train_metrics.merge(
+            TrainMetrics.single_from_model_output(
+                step=jnp.array(train_state.step, dtype=jnp.float32),
+                epoch=jnp.array(train_state.train_dataset.epoch, dtype=jnp.float32),
+            )
+        )
+        return train_state.replace(
+            model_metrics=model_metrics, train_metrics=train_metrics
+        )
+
+    train_state = jax.lax.fori_loop(
+        0, config.num_compile_steps, lambda _, state: single_step(state), train_state
     )
-    train_metrics = train_state.train_metrics.merge(new_train_metrics)
-    return train_state.replace(
-        model_metrics=model_metrics,
-        train_metrics=train_metrics,
-        train_dataset=train_dataset,
-        rng=rng,
-    )
+    return train_state
 
 
 def log_metrics(train_state: TrainState, writer: metric_writers.MetricWriter) -> None:
@@ -140,14 +177,12 @@ def save_checkpoint(train_state: TrainState, path: str) -> None:
 
     # save to temporary directory, then copy to final destination
     with tempfile.TemporaryDirectory() as tmpdir:
-        tmp_path = Path(tmpdir)
+        tmp_path = Path(tmpdir) / "checkpoint"
         checkpointer = orbax.checkpoint.StandardCheckpointer()
         checkpointer.save(tmp_path, train_state)
         checkpointer.wait_until_finished()
 
-        fs = fsspec.generic.GenericFileSystem()
-        fs.put(tmp_path, path, recursive=True)
-        fs.copy
+        fsspec.generic.rsync(tmp_path, path)
 
 
 @partial(jax.jit, static_argnames=("batch_size",))
@@ -158,9 +193,10 @@ def _eval_step(
     model_metrics: ModelMetrics,
 ):
     x, dataset = dataset.sample(batch_size)
-    _, new_model_metrics = train_state.apply_fn(
-        train_state.params, x, train_state.rng, train=False
+    _, metrics = jax.vmap(train_state.apply_fn, in_axes=(None, 0, 0, None))(
+        train_state.ema_params, x, jax.random.split(train_state.rng, batch_size), False
     )
+    new_model_metrics = jax.tree_map(jnp.mean, metrics)
     model_metrics = model_metrics.merge(new_model_metrics)
     return model_metrics, dataset
 
@@ -263,7 +299,13 @@ def generate_samples(
 
 def main(config: TrainConfig) -> None:
     wandb.login()
-    wandb.init(project="jax-flow-matching", dir="_wandb")
+    wandb.init(
+        project="jax-flow-matching",
+        dir="_wandb",
+        mode="offline" if config.dry_run else "online",
+        save_code=True,
+    )
+    logging.set_verbosity(logging.INFO)
     writer = metric_writers.AsyncMultiWriter(
         [metric_writers.LoggingWriter(), WandbWriter()]
     )
