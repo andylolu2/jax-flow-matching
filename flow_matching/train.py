@@ -1,3 +1,4 @@
+import gc
 import math
 import tempfile
 from functools import partial
@@ -5,8 +6,6 @@ from pathlib import Path
 from typing import Any, Callable
 
 import flax.struct
-import fsspec
-import fsspec.generic
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
@@ -28,6 +27,7 @@ from flow_matching.model.base import ModelMetrics
 from flow_matching.model.builder import ModelConfig, build_model
 from flow_matching.optimizer.builder import OptimizerConfig, build_optimizer
 from flow_matching.third_party.clu import WandbWriter
+from flow_matching.third_party.fsspec import copy
 from flow_matching.third_party.pydantic import BaseModel
 
 
@@ -182,7 +182,7 @@ def save_checkpoint(train_state: TrainState, path: str) -> None:
         checkpointer.save(tmp_path, train_state)
         checkpointer.wait_until_finished()
 
-        fsspec.generic.rsync(tmp_path, path)
+        copy(str(tmp_path), path)
 
 
 @partial(jax.jit, static_argnames=("batch_size",))
@@ -224,6 +224,7 @@ def evaluate(
     )
 
 
+@partial(jax.jit, static_argnames=("n",))
 def _generate_samples(train_state: TrainState, n: int) -> Float[Array, "{n} ..."]:
     _x, _ = train_state.train_dataset.sample(1)
     size = math.prod(jnp.shape(_x)[1:])
@@ -334,3 +335,5 @@ def main(config: TrainConfig) -> None:
             )
         if config.generate.steps > 0 and step % config.generate.steps == 0:
             generate_samples(train_state, config.generate.samples, writer)
+
+        gc.collect()

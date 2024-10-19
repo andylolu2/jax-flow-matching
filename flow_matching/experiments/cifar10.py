@@ -1,5 +1,4 @@
 from datetime import datetime
-from pathlib import Path
 
 import jax.numpy as jnp
 
@@ -29,7 +28,7 @@ config = TrainConfig(
         dtype=jnp.bfloat16,
     ),
     optimizer=AdamConfig(
-        learning_rate=2e-4,
+        learning_rate=1e-4,
     ),
     train_dataset=Cifar10Config(
         seed=0,
@@ -55,11 +54,9 @@ config = TrainConfig(
         samples=100,
     ),
     num_steps=500000,
-    exp_dir=(Path("checkpoints") / datetime.now().strftime("%Y%m%d-%H%M%S"))
-    .resolve()
-    .absolute()
-    .as_uri(),
+    exp_dir=f"hf://andylolu24/flow-matching-cifar10/checkpoints/{datetime.now().strftime('%Y%m%d-%H%M%S')}",
     batch_size=64,
+    num_compile_steps=10,
 )
 
 main(config)
